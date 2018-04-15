@@ -8,7 +8,7 @@ from lru import LRU
 import rlp
 
 from trie import (
-    HexaryTrie,
+    FrozenHexaryTrie,
 )
 
 from eth_utils import (
@@ -39,7 +39,7 @@ from evm.utils.padding import (
     pad32,
 )
 
-from .hash_trie import HashTrie
+from .hash_trie import FrozenHashTrie
 
 
 # Use lru-dict instead of functools.lru_cache because the latter doesn't let us invalidate a single
@@ -127,27 +127,14 @@ class BaseAccountStateDB(metaclass=ABCMeta):
         raise NotImplementedError("Must be implemented by subclass")
 
 
-class MainAccountStateDB(BaseAccountStateDB):
+class FrozenMainAccountDB(BaseAccountStateDB):
 
-    def __init__(self, db, root_hash=BLANK_ROOT_HASH, read_only=False):
+    def __init__(self, db, root_hash=BLANK_ROOT_HASH):
         # Keep a reference to the original db instance to use it as part of _get_account()'s cache
         # key.
         self._unwrapped_db = db
-        if read_only:
-            self.db = ImmutableDB(db)
-        else:
-            self.db = db
-        self.__trie = HashTrie(HexaryTrie(self.db, root_hash))
-
-    @property
-    def _trie(self):
-        if self.__trie is None:
-            raise DecommissionedStateDB()
-        return self.__trie
-
-    @_trie.setter
-    def _trie(self, value):
-        self.__trie = value
+        self.db = ImmutableDB(db)
+        self._trie = self._make_trie(root_hash)
 
     def apply_state_dict(self, state_dict):
         for account, account_data in state_dict.items():
@@ -158,17 +145,10 @@ class MainAccountStateDB(BaseAccountStateDB):
             for slot, value in account_data["storage"].items():
                 self.set_storage(account, slot, value)
 
-    def decommission(self):
-        self.db = None
-        self.__trie = None
 
     @property
     def root_hash(self):
         return self._trie.root_hash
-
-    @root_hash.setter
-    def root_hash(self, value):
-        self._trie.root_hash = value
 
     #
     # Storage
@@ -178,7 +158,7 @@ class MainAccountStateDB(BaseAccountStateDB):
         validate_uint256(slot, title="Storage Slot")
 
         account = self._get_account(address)
-        storage = HashTrie(HexaryTrie(self.db, account.storage_root))
+        storage = FrozenHashTrie(FrozenHexaryTrie(self.db, account.storage_root))
 
         slot_as_key = pad32(int_to_big_endian(slot))
 
@@ -194,7 +174,7 @@ class MainAccountStateDB(BaseAccountStateDB):
         validate_canonical_address(address, title="Storage Address")
 
         account = self._get_account(address)
-        storage = HashTrie(HexaryTrie(self.db, account.storage_root))
+        storage = FrozenHashTrie(FrozenHexaryTrie(self.db, account.storage_root))
 
         slot_as_key = pad32(int_to_big_endian(slot))
 
@@ -315,6 +295,9 @@ class MainAccountStateDB(BaseAccountStateDB):
     #
     # Internal
     #
+    def _at_trie(self, trie):
+        return type(self)(self._unwrapped_db, trie.root_hash)
+
     def _get_account(self, address):
         cache_key = (self._unwrapped_db, self.root_hash, address)
         if cache_key not in account_cache:
@@ -330,6 +313,42 @@ class MainAccountStateDB(BaseAccountStateDB):
 
     def _set_account(self, address, account):
         rlp_account = rlp.encode(account, sedes=Account)
-        self._trie[address] = rlp_account
-        cache_key = (self._unwrapped_db, self.root_hash, address)
+        new_trie = self._trie.set(address, rlp_account)
+        cache_key = (self._unwrapped_db, new_trie.root_hash, address)
         account_cache[cache_key] = rlp_account
+        return self._at_trie(new_trie)
+
+    def _make_trie(self, root_hash):
+        return FrozenHashTrie(FrozenHexaryTrie(self.db, root_hash))
+
+
+class MainAccountStateDB(FrozenMainAccountDB):
+    def __init__(self, db, root_hash=BLANK_ROOT_HASH, read_only=False):
+        self._unwrapped_db = db
+        if read_only:
+            self.db = ImmutableDB(db)
+        else:
+            self.db = db
+        self.__trie = self._make_trie(root_hash)
+
+    def _at_trie(self, trie):
+        self.__trie = trie
+        return self
+
+    @property
+    def _trie(self):
+        if self.__trie is None:
+            raise DecommissionedStateDB()
+        return self.__trie
+
+    def decommission(self):
+        self.db = None
+        self.__trie = None
+
+    @property
+    def root_hash(self):
+        return self._trie.root_hash
+
+    @root_hash.setter
+    def root_hash(self, root_hash):
+        self.__trie = self._make_trie(root_hash)
