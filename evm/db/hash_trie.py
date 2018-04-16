@@ -10,15 +10,10 @@ class FrozenHashTrie:
         self._trie = trie
 
     def set(self, key, value):
-        new_trie = self._trie.set(keccak(key), value)
-        return self._at_trie(new_trie)
+        return self._trie.set(keccak(key), value)
 
     def delete(self, key):
-        new_trie = self._trie.delete(keccak(key))
-        return self._at_trie(new_trie)
-
-    def _at_trie(self, trie):
-        return type(self)(trie)
+        return self._trie.delete(keccak(key))
 
     def __getitem__(self, key):
         return self._trie[keccak(key)]
@@ -42,6 +37,12 @@ class HashTrie(FrozenHashTrie):
     def root_hash(self, value):
         self._trie.root_hash = value
 
-    def _at_trie(self, trie):
-        self._trie = trie
-        return self
+    def set(self, key, value):
+        delta = super().set(key, value)
+        self._trie = self._trie.after(delta)
+        return delta
+
+    def delete(self, key):
+        delta = super().delete(key)
+        self._trie = self._trie.after(delta)
+        return delta

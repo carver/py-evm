@@ -185,14 +185,14 @@ class FrozenMainAccountDB(BaseAccountStateDB):
             del storage[slot_as_key]
 
         account.storage_root = storage.root_hash
-        self._set_account(address, account)
+        return self._set_account(address, account)
 
     def delete_storage(self, address):
         validate_canonical_address(address, title="Storage Address")
 
         account = self._get_account(address)
         account.storage_root = BLANK_ROOT_HASH
-        self._set_account(address, account)
+        return self._set_account(address, account)
 
     #
     # Balance
@@ -209,7 +209,7 @@ class FrozenMainAccountDB(BaseAccountStateDB):
 
         account = self._get_account(address)
         account.balance = balance
-        self._set_account(address, account)
+        return self._set_account(address, account)
 
     #
     # Nonce
@@ -221,7 +221,7 @@ class FrozenMainAccountDB(BaseAccountStateDB):
         account = self._get_account(address)
         account.nonce = nonce
 
-        self._set_account(address, account)
+        return self._set_account(address, account)
 
     def get_nonce(self, address):
         validate_canonical_address(address, title="Storage Address")
@@ -244,7 +244,7 @@ class FrozenMainAccountDB(BaseAccountStateDB):
 
         account.code_hash = keccak(code)
         self.db[account.code_hash] = code
-        self._set_account(address, account)
+        return self._set_account(address, account)
 
     def get_code(self, address):
         validate_canonical_address(address, title="Storage Address")
@@ -265,7 +265,7 @@ class FrozenMainAccountDB(BaseAccountStateDB):
 
         account = self._get_account(address)
         account.code_hash = EMPTY_SHA3
-        self._set_account(address, account)
+        return self._set_account(address, account)
 
     #
     # Account Methods
@@ -287,7 +287,7 @@ class FrozenMainAccountDB(BaseAccountStateDB):
         validate_canonical_address(address, title="Storage Address")
 
         account = self._get_account(address)
-        self._set_account(address, account)
+        return self._set_account(address, account)
 
     def account_is_empty(self, address):
         return not self.account_has_code_or_nonce(address) and self.get_balance(address) == 0
@@ -295,9 +295,6 @@ class FrozenMainAccountDB(BaseAccountStateDB):
     #
     # Internal
     #
-    def _at_trie(self, trie):
-        return type(self)(self._unwrapped_db, trie.root_hash)
-
     def _get_account(self, address):
         cache_key = (self._unwrapped_db, self.root_hash, address)
         if cache_key not in account_cache:
@@ -313,10 +310,10 @@ class FrozenMainAccountDB(BaseAccountStateDB):
 
     def _set_account(self, address, account):
         rlp_account = rlp.encode(account, sedes=Account)
-        new_trie = self._trie.set(address, rlp_account)
-        cache_key = (self._unwrapped_db, new_trie.root_hash, address)
+        trie_delta = self._trie.set(address, rlp_account)
+        cache_key = (self._unwrapped_db, trie_delta.root_hash, address)
         account_cache[cache_key] = rlp_account
-        return self._at_trie(new_trie)
+        return trie_delta
 
     def _make_trie(self, root_hash):
         return FrozenHashTrie(FrozenHexaryTrie(self.db, root_hash))
@@ -330,10 +327,6 @@ class MainAccountStateDB(FrozenMainAccountDB):
         else:
             self.db = db
         self.__trie = self._make_trie(root_hash)
-
-    def _at_trie(self, trie):
-        self.__trie = trie
-        return self
 
     @property
     def _trie(self):
@@ -352,3 +345,9 @@ class MainAccountStateDB(FrozenMainAccountDB):
     @root_hash.setter
     def root_hash(self, root_hash):
         self.__trie = self._make_trie(root_hash)
+
+    def _set_account(self, address, account):
+        trie_delta = super()._set_account(address, account)
+        trie_delta.apply(self.db)
+        self.__trie = self._make_trie(trie_delta.root_hash)
+        return trie_delta
