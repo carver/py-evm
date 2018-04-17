@@ -1,3 +1,6 @@
+from cytoolz import (
+    curry,
+)
 import rlp
 from trie import (
     HexaryTrie,
@@ -13,10 +16,8 @@ def trie_deltas_for_serializables(trie, serializables):
         yield trie.set(index_key, rlp.encode(rlp_object))
 
 
-def make_trie_root_and_nodes(serializables, trie_class=HexaryTrie, chain_db_class=ChainDB):
+@curry
+def build_new_trie_delta(trie_class, serializables):
     empty_trie = trie_class(db={})
-
     deltas = trie_deltas_for_serializables(empty_trie, serializables)
-    joint_deltas = trie_class.Delta.join(deltas, empty_trie.root_hash)
-
-    return joint_deltas.root_hash, joint_deltas.changes
+    return trie_class.Delta.join(deltas, empty_trie.root_hash)

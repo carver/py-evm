@@ -26,7 +26,7 @@ from evm.constants import (
     UINT_256_MAX,
 )
 from evm.db.trie import (
-    make_trie_root_and_nodes,
+    build_new_trie_delta,
 )
 from evm.utils.datatypes import (
     Configurable,
@@ -332,13 +332,13 @@ class BaseState(Configurable, metaclass=ABCMeta):
         block.transactions.append(transaction)
 
         # Get trie roots and changed key-values.
-        tx_root_hash, tx_kv_nodes = make_trie_root_and_nodes(
+        tx_root_hash, tx_kv_nodes = build_new_trie_delta(
+            self.trie_class,
             block.transactions,
-            self.trie_class,
         )
-        receipt_root_hash, receipt_kv_nodes = make_trie_root_and_nodes(
-            self.receipts,
+        receipt_root_hash, receipt_kv_nodes = build_new_trie_delta(
             self.trie_class,
+            self.receipts,
         )
 
         trie_data = merge(tx_kv_nodes, receipt_kv_nodes)

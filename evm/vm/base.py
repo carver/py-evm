@@ -20,7 +20,7 @@ from evm.constants import (
     MAX_PREV_HEADER_DEPTH,
     MAX_UNCLES,
 )
-from evm.db.trie import make_trie_root_and_nodes
+from evm.db.trie import build_new_trie_delta
 from evm.exceptions import (
     BlockNotFound,
     ValidationError,
@@ -266,8 +266,8 @@ class BaseVM(Configurable, metaclass=ABCMeta):
                     )
                 )
 
-        tx_root_hash, _ = make_trie_root_and_nodes(block.transactions)
-        if tx_root_hash != block.header.transaction_root:
+        delta = self.combine_to_trie(block.transactions)
+        if delta.root_hash != block.header.transaction_root:
             raise ValidationError(
                 "Block's transaction_root ({0}) does not match expected value: {1}".format(
                     block.header.transaction_root, tx_root_hash))
@@ -476,3 +476,7 @@ class BaseVM(Configurable, metaclass=ABCMeta):
             block=self.block,
             prev_hashes=self.previous_hashes
         )
+
+    @classmethod
+    def build_trie_delta(cls, rlp_objects):
+        return build_new_trie_delta(cls.get_state_class().trie_class, block.transactions)
