@@ -2,9 +2,9 @@ from abc import (
     ABCMeta,
     abstractmethod
 )
-from uuid import UUID
-
-from lru import LRU
+from cytoolz import (
+    compose,
+)
 
 import rlp
 
@@ -18,8 +18,14 @@ from evm.constants import (
     BLANK_ROOT_HASH,
     EMPTY_SHA3,
 )
-from evm.db.journal import (
-    JournalDB,
+from evm.db.backends.base import (
+    BaseDB,
+)
+from evm.db.cached_rlp import (
+    CachedRLPDB,
+)
+from evm.db.hash_trie import (
+    HashTrie,
 )
 from evm.rlp.accounts import (
     Account,
@@ -37,14 +43,6 @@ from evm.utils.padding import (
     pad32,
 )
 
-from .hash_trie import HashTrie
-
-
-# Use lru-dict instead of functools.lru_cache because the latter doesn't let us invalidate a single
-# entry, so we'd have to invalidate the whole cache in _set_account() and that turns out to be too
-# expensive.
-account_cache = LRU(2048)
-
 
 class BaseAccountDB(metaclass=ABCMeta):
 
@@ -53,12 +51,6 @@ class BaseAccountDB(metaclass=ABCMeta):
         raise NotImplementedError(
             "Must be implemented by subclasses"
         )
-
-    # We need to ignore this until https://github.com/python/mypy/issues/4165 is resolved
-    @property  # tyoe: ignore
-    @abstractmethod
-    def state_root(self):
-        raise NotImplementedError("Must be implemented by subclasses")
 
     #
     # Storage
@@ -111,42 +103,21 @@ class BaseAccountDB(metaclass=ABCMeta):
     def account_is_empty(self, address):
         raise NotImplementedError("Must be implemented by subclass")
 
-    #
-    # Record and discard API
-    #
-    @abstractmethod
-    def record(self) -> UUID:
-        raise NotImplementedError("Must be implemented by subclass")
 
-    @abstractmethod
-    def discard(self, checkpoint: UUID) -> None:
-        raise NotImplementedError("Must be implemented by subclass")
-
-    @abstractmethod
-    def commit(self, checkpoint: UUID) -> None:
-        raise NotImplementedError("Must be implemented by subclass")
-
-    @abstractmethod
-    def clear(self) -> None:
-        raise NotImplementedError("Must be implemented by subclass")
+storage_key_map = compose(pad32, int_to_big_endian)
 
 
+# TODO rename to State
 class AccountDB(BaseAccountDB):
+    def __init__(self, trie_db: BaseDB, raw_db: BaseDB) -> None:
+        self._accounts = CachedRLPDB(trie_db, Account, Account())
+        self._storage_db = raw_db
 
-    def __init__(self, db, state_root=BLANK_ROOT_HASH):
-        # Keep a reference to the original db instance to use it as part of _get_account()'s cache
-        # key.
-        self._unwrapped_db = db
-        self.db = JournalDB(db)
-        self._trie = HashTrie(HexaryTrie(self.db, state_root))
+        # storage_rlp_db = CachedRLPDB(trie_db, rlp.sedes.big_endian_int, 0)
+        # self._storage_db = KeyMapDB(storage_rlp_db, storage_key_map)
+        # TODO ^
 
-    @property
-    def state_root(self):
-        return self._trie.root_hash
-
-    @state_root.setter
-    def state_root(self, value):
-        self._trie.root_hash = value
+        self._code_db = raw_db
 
     #
     # Storage
@@ -155,8 +126,8 @@ class AccountDB(BaseAccountDB):
         validate_canonical_address(address, title="Storage Address")
         validate_uint256(slot, title="Storage Slot")
 
-        account = self._get_account(address)
-        storage = HashTrie(HexaryTrie(self.db, account.storage_root))
+        account = self._accounts[address]
+        storage = HashTrie(HexaryTrie(self._storage_db, account.storage_root))
 
         slot_as_key = pad32(int_to_big_endian(slot))
 
@@ -171,8 +142,8 @@ class AccountDB(BaseAccountDB):
         validate_uint256(slot, title="Storage Slot")
         validate_canonical_address(address, title="Storage Address")
 
-        account = self._get_account(address)
-        storage = HashTrie(HexaryTrie(self.db, account.storage_root))
+        account = self._accounts[address]
+        storage = HashTrie(HexaryTrie(self._storage_db, account.storage_root))
 
         slot_as_key = pad32(int_to_big_endian(slot))
 
@@ -182,13 +153,13 @@ class AccountDB(BaseAccountDB):
         else:
             del storage[slot_as_key]
 
-        self._set_account(address, account.copy(storage_root=storage.root_hash))
+        self._accounts[address] = account.copy(storage_root=storage.root_hash)
 
     def delete_storage(self, address):
         validate_canonical_address(address, title="Storage Address")
 
-        account = self._get_account(address)
-        self._set_account(address, account.copy(storage_root=BLANK_ROOT_HASH))
+        account = self._accounts[address]
+        self._accounts[address] = account.copy(storage_root=BLANK_ROOT_HASH)
 
     #
     # Balance
@@ -196,15 +167,15 @@ class AccountDB(BaseAccountDB):
     def get_balance(self, address):
         validate_canonical_address(address, title="Storage Address")
 
-        account = self._get_account(address)
+        account = self._accounts[address]
         return account.balance
 
     def set_balance(self, address, balance):
         validate_canonical_address(address, title="Storage Address")
         validate_uint256(balance, title="Account Balance")
 
-        account = self._get_account(address)
-        self._set_account(address, account.copy(balance=balance))
+        account = self._accounts[address]
+        self._accounts[address] = account.copy(balance=balance)
 
     #
     # Nonce
@@ -212,15 +183,15 @@ class AccountDB(BaseAccountDB):
     def get_nonce(self, address):
         validate_canonical_address(address, title="Storage Address")
 
-        account = self._get_account(address)
+        account = self._accounts[address]
         return account.nonce
 
     def set_nonce(self, address, nonce):
         validate_canonical_address(address, title="Storage Address")
         validate_uint256(nonce, title="Nonce")
 
-        account = self._get_account(address)
-        self._set_account(address, account.copy(nonce=nonce))
+        account = self._accounts[address]
+        self._accounts[address] = account.copy(nonce=nonce)
 
     def increment_nonce(self, address):
         current_nonce = self.get_nonce(address)
@@ -233,7 +204,7 @@ class AccountDB(BaseAccountDB):
         validate_canonical_address(address, title="Storage Address")
 
         try:
-            return self.db[self.get_code_hash(address)]
+            return self._code_db[self.get_code_hash(address)]
         except KeyError:
             return b""
 
@@ -241,23 +212,23 @@ class AccountDB(BaseAccountDB):
         validate_canonical_address(address, title="Storage Address")
         validate_is_bytes(code, title="Code")
 
-        account = self._get_account(address)
+        account = self._accounts[address]
 
         code_hash = keccak(code)
-        self.db[code_hash] = code
-        self._set_account(address, account.copy(code_hash=code_hash))
+        self._code_db[code_hash] = code
+        self._accounts[address] = account.copy(code_hash=code_hash)
 
     def get_code_hash(self, address):
         validate_canonical_address(address, title="Storage Address")
 
-        account = self._get_account(address)
+        account = self._accounts[address]
         return account.code_hash
 
     def delete_code(self, address):
         validate_canonical_address(address, title="Storage Address")
 
-        account = self._get_account(address)
-        self._set_account(address, account.copy(code_hash=EMPTY_SHA3))
+        account = self._accounts[address]
+        self._accounts[address] = account.copy(code_hash=EMPTY_SHA3)
 
     #
     # Account Methods
@@ -268,57 +239,18 @@ class AccountDB(BaseAccountDB):
     def delete_account(self, address):
         validate_canonical_address(address, title="Storage Address")
 
-        del self._trie[address]
+        del self._accounts[address]
 
     def account_exists(self, address):
         validate_canonical_address(address, title="Storage Address")
 
-        return bool(self._trie[address])
+        return bool(self._accounts[address])
 
     def touch_account(self, address):
         validate_canonical_address(address, title="Storage Address")
 
-        account = self._get_account(address)
-        self._set_account(address, account)
+        account = self._accounts[address]
+        self._accounts[address] = account
 
     def account_is_empty(self, address):
         return not self.account_has_code_or_nonce(address) and self.get_balance(address) == 0
-
-    #
-    # Internal
-    #
-    def _get_account(self, address):
-        cache_key = (id(self._unwrapped_db), self.state_root, address)
-        if cache_key not in account_cache:
-            account_cache[cache_key] = self._trie[address]
-
-        rlp_account = account_cache[cache_key]
-        if rlp_account:
-            account = rlp.decode(rlp_account, sedes=Account)
-        else:
-            account = Account()
-        return account
-
-    def _set_account(self, address, account):
-        rlp_account = rlp.encode(account, sedes=Account)
-        self._trie[address] = rlp_account
-        cache_key = (id(self._unwrapped_db), self.state_root, address)
-        account_cache[cache_key] = rlp_account
-
-    #
-    # Record and discard API
-    #
-    def record(self) -> UUID:
-        return self.db.record()
-
-    def discard(self, changeset_id: UUID) -> None:
-        return self.db.discard(changeset_id)
-
-    def commit(self, changeset_id: UUID) -> None:
-        return self.db.commit(changeset_id)
-
-    def persist(self) -> None:
-        return self.db.persist()
-
-    def clear(self) -> None:
-        return self.db.reset()

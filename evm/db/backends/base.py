@@ -52,3 +52,6 @@ class BaseDB(MutableMapping, metaclass=ABCMeta):
 
     def __len__(self):
         raise NotImplementedError("By default, DB classes cannot return the total number of keys.")
+
+    def __hash__(self):
+        return hash(id(self))

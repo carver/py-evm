@@ -2,11 +2,16 @@ from abc import (
     ABCMeta,
     abstractmethod
 )
+from cytoolz import (
+    compose,
+)
 import logging
 from typing import (  # noqa: F401
     Type,
     TYPE_CHECKING
 )
+
+from trie import HexaryTrie
 
 from evm.constants import (
     MAX_PREV_HEADER_DEPTH,
@@ -14,6 +19,12 @@ from evm.constants import (
 from evm.db.account import (  # noqa: F401
     BaseAccountDB,
     AccountDB,
+)
+from evm.db.hash_trie import (
+    HashTrie,
+)
+from evm.db.journal import (
+    JournalDB,
 )
 from evm.utils.datatypes import (
     Configurable,
@@ -28,6 +39,7 @@ if TYPE_CHECKING:
     )
 
 
+# TODO rename `StateBuilder`
 class BaseState(Configurable, metaclass=ABCMeta):
     """
     The base class that encapsulates all of the various moving parts related to
@@ -49,17 +61,22 @@ class BaseState(Configurable, metaclass=ABCMeta):
     #
     _chaindb = None
     execution_context = None
-    state_root = None
+    root = None
 
     computation_class = None  # type: Type[BaseComputation]
     transaction_context_class = None  # type: Type[BaseTransactionContext]
     account_db_class = None  # type: Type[BaseAccountDB]
     transaction_executor = None  # type: Type[BaseTransactionExecutor]
 
+    trie_class = compose(HashTrie, HexaryTrie)
+
     def __init__(self, db, execution_context, state_root):
-        self._db = db
+        self._db = JournalDB(db)
         self.execution_context = execution_context
-        self.account_db = self.get_account_db_class()(self._db, state_root)
+        self._trie = self.trie_class(self._db)
+        self._trie.root_hash = state_root
+        self.account_db = self.get_account_db_class()(self._trie, self._db)
+        # TODO ^ split into code/storage/accounts objects
 
     #
     # Logging
@@ -121,23 +138,23 @@ class BaseState(Configurable, metaclass=ABCMeta):
         return cls.account_db_class
 
     @property
-    def state_root(self):
+    def root(self):
         """
         Return the current ``state_root`` from the underlying database
         """
-        return self.account_db.state_root
+        return self._trie.root_hash
 
     #
-    # Access self._chaindb
+    # Journaling
     #
     def snapshot(self):
         """
         Perform a full snapshot of the current state.
 
-        Snapshots are a combination of the :attr:`~state_root` at the time of the
+        Snapshots are a combination of the :attr:`~root` at the time of the
         snapshot and the id of the changeset from the journaled DB.
         """
-        return (self.state_root, self.account_db.record())
+        return (self.root, self._db.record())
 
     def revert(self, snapshot):
         """
@@ -146,9 +163,9 @@ class BaseState(Configurable, metaclass=ABCMeta):
         state_root, changeset_id = snapshot
 
         # first revert the database state root.
-        self.account_db.state_root = state_root
+        self._trie.root_hash = state_root
         # now roll the underlying database back
-        self.account_db.discard(changeset_id)
+        self._db.discard(changeset_id)
 
     def commit(self, snapshot):
         """
@@ -156,7 +173,13 @@ class BaseState(Configurable, metaclass=ABCMeta):
         will merge in any changesets that were recorded *after* the snapshot changeset.
         """
         _, checkpoint_id = snapshot
-        self.account_db.commit(checkpoint_id)
+        self._db.commit(checkpoint_id)
+
+    def persist(self) -> None:
+        return self._db.persist()
+
+    def clear(self) -> None:
+        return self._db.reset()
 
     #
     # Access self.prev_hashes (Read-only)
@@ -217,8 +240,8 @@ class BaseState(Configurable, metaclass=ABCMeta):
         :return: the new state root, and the computation
         """
         computation = self.execute_transaction(transaction)
-        self.account_db.persist()
-        return self.account_db.state_root, computation
+        self.persist()
+        return self.root, computation
 
     def get_transaction_executor(self):
         return self.transaction_executor(self)

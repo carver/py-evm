@@ -292,11 +292,7 @@ class VM(BaseVM):
     def __init__(self, header, chaindb):
         self.chaindb = chaindb
         self.block = self.get_block_class().from_header(header=header, chaindb=self.chaindb)
-        self.state = self.get_state_class()(
-            db=self.chaindb.db,
-            execution_context=self.block.header.create_execution_context(self.previous_hashes),
-            state_root=self.block.header.state_root,
-        )
+        self.state = self._get_state_at(header, chaindb)
 
     #
     # Logging
@@ -477,9 +473,9 @@ class VM(BaseVM):
         # We need to call `persist` here since the state db batches
         # all writes until we tell it to write to the underlying db
         # TODO: Refactor to only use batching/journaling for tx processing
-        self.state.account_db.persist()
+        self.state.persist()
 
-        return block.copy(header=block.header.copy(state_root=self.state.state_root))
+        return block.copy(header=block.header.copy(state_root=self.state.root))
 
     def pack_block(self, block, *args, **kwargs):
         """
@@ -728,3 +724,12 @@ class VM(BaseVM):
         snapshot = state.snapshot()
         yield state
         state.revert(snapshot)
+
+    @classmethod
+    def _get_state_at(cls, header, chaindb):
+        prev_hashes = cls.get_prev_hashes(header.parent_hash, chaindb)
+        return cls.get_state_class()(
+            db=chaindb.db,
+            execution_context=header.create_execution_context(prev_hashes),
+            state_root=header.state_root,
+        )
