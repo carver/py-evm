@@ -75,8 +75,11 @@ class BaseState(Configurable, metaclass=ABCMeta):
         self.execution_context = execution_context
         self._trie = self.trie_class(self._db)
         self._trie.root_hash = state_root
-        self.account_db = self.get_account_db_class()(self._trie, self._db)
+        self.account_db = self._build_account_db()
         # TODO ^ split into code/storage/accounts objects
+
+    def _build_account_db(self):
+        return self.get_account_db_class()(self._trie, self._db)
 
     #
     # Logging
@@ -166,6 +169,7 @@ class BaseState(Configurable, metaclass=ABCMeta):
         self._trie.root_hash = state_root
         # now roll the underlying database back
         self._db.discard(changeset_id)
+        self.account_db = self._build_account_db()
 
     def commit(self, snapshot):
         """
@@ -177,9 +181,6 @@ class BaseState(Configurable, metaclass=ABCMeta):
 
     def persist(self) -> None:
         return self._db.persist()
-
-    def clear(self) -> None:
-        return self._db.reset()
 
     #
     # Access self.prev_hashes (Read-only)
