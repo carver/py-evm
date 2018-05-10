@@ -39,7 +39,6 @@ if TYPE_CHECKING:
     )
 
 
-# TODO rename `StateBuilder`
 class BaseState(Configurable, metaclass=ABCMeta):
     """
     The base class that encapsulates all of the various moving parts related to
@@ -76,7 +75,6 @@ class BaseState(Configurable, metaclass=ABCMeta):
         self._trie = self.trie_class(self._db)
         self._trie.root_hash = state_root
         self.account_db = self._build_account_db()
-        # TODO ^ split into code/storage/accounts objects
 
     def _build_account_db(self):
         return self.get_account_db_class()(self._trie, self._db)

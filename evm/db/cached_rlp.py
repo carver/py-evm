@@ -7,7 +7,6 @@ from evm.db.backends.base import BaseDB
 unset = object()
 
 
-# TODO add lru cache
 class CachedRLPDB(BaseDB):
     """
     Set and get decoded RLP objects, where the underlying db stores

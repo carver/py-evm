@@ -107,16 +107,10 @@ class BaseAccountDB(metaclass=ABCMeta):
 storage_key_map = compose(pad32, int_to_big_endian)
 
 
-# TODO rename to State
 class AccountDB(BaseAccountDB):
     def __init__(self, trie_db: BaseDB, raw_db: BaseDB) -> None:
         self._accounts = CachedRLPDB(trie_db, Account, Account())
         self._storage_db = raw_db
-
-        # storage_rlp_db = CachedRLPDB(trie_db, rlp.sedes.big_endian_int, 0)
-        # self._storage_db = KeyMapDB(storage_rlp_db, storage_key_map)
-        # TODO ^
-
         self._code_db = raw_db
 
     #
@@ -129,7 +123,7 @@ class AccountDB(BaseAccountDB):
         account = self._accounts[address]
         storage = HashTrie(HexaryTrie(self._storage_db, account.storage_root))
 
-        slot_as_key = pad32(int_to_big_endian(slot))
+        slot_as_key = storage_key_map(slot)
 
         if slot_as_key in storage:
             encoded_value = storage[slot_as_key]
@@ -145,7 +139,7 @@ class AccountDB(BaseAccountDB):
         account = self._accounts[address]
         storage = HashTrie(HexaryTrie(self._storage_db, account.storage_root))
 
-        slot_as_key = pad32(int_to_big_endian(slot))
+        slot_as_key = storage_key_map(slot)
 
         if value:
             encoded_value = rlp.encode(value)
