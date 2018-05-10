@@ -72,12 +72,10 @@ class BaseState(Configurable, metaclass=ABCMeta):
     def __init__(self, db, execution_context, state_root):
         self._db = JournalDB(db)
         self.execution_context = execution_context
-        self._trie = self.trie_class(self._db)
+        self._trie = self.trie_class(db)
         self._trie.root_hash = state_root
-        self.account_db = self._build_account_db()
-
-    def _build_account_db(self):
-        return self.get_account_db_class()(self._trie, self._db)
+        self._journaled_trie = JournalDB(self._trie)
+        self.account_db = self.get_account_db_class()(self._journaled_trie, self._db)
 
     #
     # Logging
@@ -155,30 +153,38 @@ class BaseState(Configurable, metaclass=ABCMeta):
         Snapshots are a combination of the :attr:`~root` at the time of the
         snapshot and the id of the changeset from the journaled DB.
         """
-        return (self.root, self._db.record())
+        return (self._trie.root_hash, self._db.record(), self._journaled_trie.record())
 
     def revert(self, snapshot):
         """
         Revert the VM to the state at the snapshot
         """
-        state_root, changeset_id = snapshot
+        state_root, raw_changeset_id, trie_changeset_id = snapshot
 
         # first revert the database state root.
         self._trie.root_hash = state_root
+
         # now roll the underlying database back
-        self._db.discard(changeset_id)
-        self.account_db = self._build_account_db()
+        self._db.discard(raw_changeset_id)
+
+        # and roll the trie journal back
+        self._journaled_trie.discard(trie_changeset_id)
+
+        # force a cache reset by rebuilding account_db
+        self.account_db = self.get_account_db_class()(self._journaled_trie, self._db)
 
     def commit(self, snapshot):
         """
         Commit the journal to the point where the snapshot was taken.  This
         will merge in any changesets that were recorded *after* the snapshot changeset.
         """
-        _, checkpoint_id = snapshot
-        self._db.commit(checkpoint_id)
+        _, raw_checkpoint_id, trie_checkpoint_id = snapshot
+        self._db.commit(raw_checkpoint_id)
+        self._journaled_trie.commit(trie_checkpoint_id)
 
     def persist(self) -> None:
-        return self._db.persist()
+        self._journaled_trie.persist()
+        self._db.persist()
 
     #
     # Access self.prev_hashes (Read-only)
